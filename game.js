@@ -1,406 +1,366 @@
 (() => {
   const canvas = document.getElementById("game");
   const ctx = canvas.getContext("2d");
+  const startCard = document.getElementById("startCard");
+  const pauseBtn = document.getElementById("pauseBtn");
+  const muteBtn = document.getElementById("muteBtn");
+  const statusMessage = document.getElementById("statusMessage");
+  const bgm = document.getElementById("bgm");
 
-  let width = 0;
-  let height = 0;
-  let scale = 1;
-  let lastTime = 0;
-  let pipeTimer = 0;
+  const storage = {
+    get(key, fallback) {
+      try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; }
+    },
+    set(key, value) {
+      try { localStorage.setItem(key, value); } catch {}
+    }
+  };
+
+  let W = 0, H = 0, DPR = 1;
   let state = "ready";
+  let paused = false;
+  let muted = storage.get("happyBirdsMuted", "0") === "1";
   let score = 0;
-  let bestScore = Number(localStorage.getItem("flapDashBest") || 0);
-  let frame = 0;
-
-  const bird = {
-    x: 0,
-    y: 0,
-    radius: 18,
-    velocity: 0,
-    gravity: 0.45,
-    jump: -6, // 25% less jump than the original -8 version
-    rotation: 0
-  };
-
-  const settings = {
-    pipeWidth: 72,
-    pipeGap: 178,
-    pipeSpeed: 3.05,
-    spawnEvery: 92,
-    groundHeight: 86
-  };
-
+  let best = Number(storage.get("happyBirdsBest", "0")) || 0;
+  let lastTime = 0;
+  let spawnTimer = 0;
   let pipes = [];
-  let clouds = [];
   let particles = [];
 
-  function fitCanvas() {
-    const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
-    width = Math.floor(window.innerWidth);
-    height = Math.floor(window.innerHeight);
-    canvas.width = Math.floor(width * dpr);
-    canvas.height = Math.floor(height * dpr);
-    canvas.style.width = `${width}px`;
-    canvas.style.height = `${height}px`;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const bird = {
+    x: 90, y: 260, r: 18, vy: 0, rot: 0
+  };
 
-    scale = Math.max(0.85, Math.min(1.2, width / 390));
-    settings.pipeWidth = 72 * scale;
-    settings.pipeGap = 178 * scale;
-    settings.pipeSpeed = 3.05 * scale;
-    settings.groundHeight = Math.max(76, 88 * scale);
-    bird.radius = 18 * scale;
-    bird.x = width * 0.28;
+  const physics = {
+    gravity: 1700,
+    flap: -455,
+    pipeSpeed: 205,
+    pipeGap: 170,
+    pipeWidth: 72,
+    spawnEvery: 1.45
+  };
 
-    if (state === "ready") {
-      bird.y = height * 0.45;
+  const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+  let audioCtx = null;
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = Math.floor(window.innerWidth);
+    H = Math.floor(window.innerHeight);
+    canvas.width = Math.floor(W * DPR);
+    canvas.height = Math.floor(H * DPR);
+    canvas.style.width = W + "px";
+    canvas.style.height = H + "px";
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    bird.x = Math.max(78, W * 0.24);
+    if (state === "ready") bird.y = H * 0.42;
+  }
+
+  function unlockAudio() {
+    if (!AudioContextCtor) return;
+    if (!audioCtx) audioCtx = new AudioContextCtor({ latencyHint: "interactive" });
+    if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
+  }
+
+  function playTone(type) {
+    if (muted || !audioCtx) return;
+    const now = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+
+    if (type === "flap") {
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(520, now);
+      osc.frequency.exponentialRampToValueAtTime(850, now + 0.07);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.16, now + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.11);
+      osc.start(now);
+      osc.stop(now + 0.12);
+    } else {
+      osc.type = "sawtooth";
+      osc.frequency.setValueAtTime(280, now);
+      osc.frequency.exponentialRampToValueAtTime(70, now + 0.34);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.22, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.38);
+      osc.start(now);
+      osc.stop(now + 0.4);
     }
   }
 
-  function resetGame() {
+  function syncMusic() {
+    bgm.volume = 0.32;
+    bgm.muted = muted;
+    if (muted || paused || state !== "playing" || document.visibilityState !== "visible") {
+      bgm.pause();
+      return;
+    }
+    bgm.play().catch(() => {});
+  }
+
+  function setMuted(next) {
+    muted = next;
+    storage.set("happyBirdsMuted", muted ? "1" : "0");
+    muteBtn.textContent = muted ? "🔇" : "🔊";
+    muteBtn.setAttribute("aria-pressed", String(muted));
+    muteBtn.setAttribute("aria-label", muted ? "Unmute audio" : "Mute audio");
+    statusMessage.textContent = muted ? "Audio muted" : "Audio on";
+    syncMusic();
+  }
+
+  function setPaused(next) {
+    if (state !== "playing") return;
+    paused = next;
+    pauseBtn.textContent = paused ? "▶" : "⏸";
+    pauseBtn.setAttribute("aria-pressed", String(paused));
+    pauseBtn.setAttribute("aria-label", paused ? "Resume game" : "Pause game");
+    statusMessage.textContent = paused ? "Game paused" : "Game resumed";
+    if (paused && audioCtx && audioCtx.state === "running") audioCtx.suspend().catch(() => {});
+    if (!paused && audioCtx && audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
+    syncMusic();
+    lastTime = performance.now();
+  }
+
+  function reset() {
     state = "ready";
+    paused = false;
     score = 0;
-    pipeTimer = 0;
     pipes = [];
     particles = [];
-    bird.y = height * 0.45;
-    bird.velocity = 0;
-    bird.rotation = 0;
-    makeClouds();
+    spawnTimer = 0;
+    bird.y = H * 0.42;
+    bird.vy = 0;
+    bird.rot = 0;
+    startCard.classList.remove("hidden");
+    pauseBtn.textContent = "⏸";
+    pauseBtn.setAttribute("aria-pressed", "false");
+    syncMusic();
   }
 
   function startGame() {
-    if (state === "ready") {
-      state = "playing";
-      flap();
-    }
+    state = "playing";
+    paused = false;
+    score = 0;
+    pipes = [];
+    particles = [];
+    spawnTimer = physics.spawnEvery;
+    bird.y = H * 0.42;
+    bird.vy = physics.flap;
+    startCard.classList.add("hidden");
+    playTone("flap");
+    syncMusic();
   }
 
   function flap() {
-    if (state === "gameover") {
-      resetGame();
-      return;
-    }
-    if (state === "ready") {
-      startGame();
-      return;
-    }
-    bird.velocity = bird.jump;
-    for (let i = 0; i < 6; i++) {
-      particles.push({
-        x: bird.x - bird.radius * 0.7,
-        y: bird.y + Math.random() * bird.radius - bird.radius / 2,
-        vx: -Math.random() * 2.4 - 0.7,
-        vy: (Math.random() - 0.5) * 1.4,
-        life: 22,
-        size: Math.random() * 3 + 2
-      });
-    }
+    unlockAudio();
+    if (state === "ready") return startGame();
+    if (state === "gameover") return reset();
+    if (paused) return;
+    bird.vy = physics.flap;
+    playTone("flap");
+    for (let i = 0; i < 6; i++) particles.push({x: bird.x - 12, y: bird.y + 8, vx: -80 - Math.random()*80, vy: -40 + Math.random()*80, life: .35});
   }
 
-  function gameOver() {
-    if (state !== "playing") return;
+  function die() {
+    if (state === "gameover") return;
     state = "gameover";
-    bestScore = Math.max(bestScore, score);
-    localStorage.setItem("flapDashBest", String(bestScore));
-    if (navigator.vibrate) navigator.vibrate(80);
-  }
-
-  function makeClouds() {
-    clouds = [];
-    const count = Math.max(5, Math.floor(width / 85));
-    for (let i = 0; i < count; i++) {
-      clouds.push({
-        x: Math.random() * width,
-        y: Math.random() * height * 0.42 + 35,
-        speed: Math.random() * 0.35 + 0.15,
-        size: Math.random() * 24 + 24
-      });
-    }
+    startCard.classList.remove("hidden");
+    startCard.querySelector("h1").textContent = "Game Over";
+    startCard.querySelectorAll("p")[0].textContent = `Score: ${score}  •  Best: ${best}`;
+    startCard.querySelectorAll("p")[1].textContent = "Tap to play again.";
+    playTone("die");
+    bgm.pause();
   }
 
   function spawnPipe() {
-    const topMin = 80 * scale;
-    const bottomLimit = height - settings.groundHeight - settings.pipeGap - 70 * scale;
-    const topHeight = Math.max(topMin, Math.random() * Math.max(80, bottomLimit - topMin) + topMin);
-    pipes.push({
-      x: width + settings.pipeWidth,
-      top: topHeight,
-      bottom: topHeight + settings.pipeGap,
-      passed: false
-    });
+    const margin = 90;
+    const gap = Math.max(135, Math.min(physics.pipeGap, H * 0.28));
+    const topH = margin + Math.random() * (H - gap - margin * 2);
+    pipes.push({ x: W + 40, top: topH, gap, passed: false });
   }
 
-  function update() {
-    frame++;
+  function update(dt) {
+    if (paused || state !== "playing") return;
 
-    clouds.forEach(cloud => {
-      cloud.x -= cloud.speed * scale;
-      if (cloud.x < -cloud.size * 3) {
-        cloud.x = width + cloud.size * 2;
-        cloud.y = Math.random() * height * 0.42 + 35;
-      }
-    });
+    bird.vy += physics.gravity * dt;
+    bird.y += bird.vy * dt;
+    bird.rot = Math.max(-0.55, Math.min(1.25, bird.vy / 700));
 
-    particles = particles.filter(p => p.life > 0);
-    particles.forEach(p => {
-      p.x += p.vx;
-      p.y += p.vy;
-      p.life--;
-    });
-
-    if (state === "ready") {
-      bird.y += Math.sin(frame / 16) * 0.55;
-      return;
-    }
-
-    if (state !== "playing") return;
-
-    bird.velocity += bird.gravity;
-    bird.y += bird.velocity;
-    bird.rotation = Math.max(-0.55, Math.min(1.15, bird.velocity / 10));
-
-    pipeTimer++;
-    if (pipeTimer >= settings.spawnEvery) {
-      pipeTimer = 0;
+    spawnTimer += dt;
+    if (spawnTimer >= physics.spawnEvery) {
+      spawnTimer = 0;
       spawnPipe();
     }
 
-    pipes.forEach(pipe => {
-      pipe.x -= settings.pipeSpeed;
-
-      if (!pipe.passed && pipe.x + settings.pipeWidth < bird.x - bird.radius) {
-        pipe.passed = true;
+    for (const p of pipes) {
+      p.x -= physics.pipeSpeed * dt;
+      if (!p.passed && p.x + physics.pipeWidth < bird.x) {
+        p.passed = true;
         score++;
-        bestScore = Math.max(bestScore, score);
+        if (score > best) {
+          best = score;
+          storage.set("happyBirdsBest", String(best));
+        }
       }
-
-      const birdLeft = bird.x - bird.radius;
-      const birdRight = bird.x + bird.radius;
-      const birdTop = bird.y - bird.radius;
-      const birdBottom = bird.y + bird.radius;
-      const hitX = birdRight > pipe.x && birdLeft < pipe.x + settings.pipeWidth;
-      const hitY = birdTop < pipe.top || birdBottom > pipe.bottom;
-
-      if (hitX && hitY) gameOver();
-    });
-
-    pipes = pipes.filter(pipe => pipe.x + settings.pipeWidth > -20);
-
-    if (bird.y + bird.radius > height - settings.groundHeight || bird.y - bird.radius < 0) {
-      gameOver();
+      const inX = bird.x + bird.r > p.x && bird.x - bird.r < p.x + physics.pipeWidth;
+      const inTop = bird.y - bird.r < p.top;
+      const inBottom = bird.y + bird.r > p.top + p.gap;
+      if (inX && (inTop || inBottom)) die();
     }
+    pipes = pipes.filter(p => p.x + physics.pipeWidth > -20);
+
+    if (bird.y + bird.r > H - 40 || bird.y - bird.r < 0) die();
+
+    for (const part of particles) {
+      part.x += part.vx * dt;
+      part.y += part.vy * dt;
+      part.life -= dt;
+    }
+    particles = particles.filter(p => p.life > 0);
   }
 
-  function drawBackground() {
-    const sky = ctx.createLinearGradient(0, 0, 0, height);
-    sky.addColorStop(0, "#67c8ff");
-    sky.addColorStop(0.55, "#b7f2ff");
-    sky.addColorStop(0.56, "#90d660");
-    sky.addColorStop(1, "#55a940");
+  function drawPipe(x, y, w, h) {
+    const grd = ctx.createLinearGradient(x, 0, x + w, 0);
+    grd.addColorStop(0, "#35b84f");
+    grd.addColorStop(.5, "#79e06c");
+    grd.addColorStop(1, "#218a3d");
+    ctx.fillStyle = grd;
+    ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = "rgba(0,0,0,.15)";
+    ctx.fillRect(x + w - 12, y, 12, h);
+    ctx.strokeStyle = "rgba(255,255,255,.35)";
+    ctx.lineWidth = 3;
+    ctx.strokeRect(x + 3, y + 3, w - 6, h - 6);
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+
+    const sky = ctx.createLinearGradient(0, 0, 0, H);
+    sky.addColorStop(0, "#75d8ff");
+    sky.addColorStop(0.65, "#d9f7ff");
+    sky.addColorStop(1, "#7bd16e");
     ctx.fillStyle = sky;
-    ctx.fillRect(0, 0, width, height);
+    ctx.fillRect(0, 0, W, H);
 
-    ctx.fillStyle = "rgba(255,255,255,0.72)";
-    clouds.forEach(c => {
+    ctx.fillStyle = "rgba(255,255,255,.7)";
+    for (let i = 0; i < 5; i++) {
+      const cx = ((i * 190 + performance.now() * 0.012) % (W + 220)) - 110;
+      const cy = 70 + i * 38;
       ctx.beginPath();
-      ctx.arc(c.x, c.y, c.size * 0.55, 0, Math.PI * 2);
-      ctx.arc(c.x + c.size * 0.55, c.y - c.size * 0.15, c.size * 0.72, 0, Math.PI * 2);
-      ctx.arc(c.x + c.size * 1.15, c.y, c.size * 0.5, 0, Math.PI * 2);
-      ctx.fill();
-    });
-
-    ctx.fillStyle = "rgba(72, 130, 50, 0.28)";
-    for (let x = -40; x < width + 60; x += 54 * scale) {
-      ctx.beginPath();
-      ctx.arc(x, height - settings.groundHeight + 15 * scale, 42 * scale, Math.PI, 0);
+      ctx.arc(cx, cy, 22, 0, Math.PI * 2);
+      ctx.arc(cx + 24, cy + 3, 28, 0, Math.PI * 2);
+      ctx.arc(cx + 58, cy, 20, 0, Math.PI * 2);
       ctx.fill();
     }
-  }
 
-  function drawPipes() {
-    pipes.forEach(pipe => {
-      const w = settings.pipeWidth;
-      const capH = 24 * scale;
-      const radius = 10 * scale;
+    for (const p of pipes) {
+      drawPipe(p.x, 0, physics.pipeWidth, p.top);
+      drawPipe(p.x, p.top + p.gap, physics.pipeWidth, H - (p.top + p.gap) - 40);
+    }
 
-      const pipeGradient = ctx.createLinearGradient(pipe.x, 0, pipe.x + w, 0);
-      pipeGradient.addColorStop(0, "#188d36");
-      pipeGradient.addColorStop(0.45, "#49d85d");
-      pipeGradient.addColorStop(1, "#137829");
-      ctx.fillStyle = pipeGradient;
-      roundRect(pipe.x, -radius, w, pipe.top + radius, radius);
+    ctx.fillStyle = "#55b848";
+    ctx.fillRect(0, H - 40, W, 40);
+    ctx.fillStyle = "rgba(0,0,0,.15)";
+    for (let x = 0; x < W; x += 28) ctx.fillRect(x, H - 40, 14, 40);
+
+    for (const part of particles) {
+      ctx.globalAlpha = Math.max(0, part.life / .35);
+      ctx.fillStyle = "white";
+      ctx.beginPath();
+      ctx.arc(part.x, part.y, 4, 0, Math.PI * 2);
       ctx.fill();
-      roundRect(pipe.x - 7 * scale, pipe.top - capH, w + 14 * scale, capH, radius);
-      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
 
-      roundRect(pipe.x, pipe.bottom, w, height - settings.groundHeight - pipe.bottom + radius, radius);
-      ctx.fill();
-      roundRect(pipe.x - 7 * scale, pipe.bottom, w + 14 * scale, capH, radius);
-      ctx.fill();
-
-      ctx.fillStyle = "rgba(255,255,255,0.18)";
-      ctx.fillRect(pipe.x + 10 * scale, 0, 10 * scale, pipe.top - capH);
-      ctx.fillRect(pipe.x + 10 * scale, pipe.bottom + capH, 10 * scale, height - settings.groundHeight - pipe.bottom);
-    });
-  }
-
-  function drawBird() {
     ctx.save();
     ctx.translate(bird.x, bird.y);
-    ctx.rotate(bird.rotation);
-
-    ctx.fillStyle = "#ffd23f";
+    ctx.rotate(bird.rot);
+    ctx.fillStyle = "#ffd43b";
     ctx.beginPath();
-    ctx.arc(0, 0, bird.radius, 0, Math.PI * 2);
+    ctx.ellipse(0, 0, 22, 18, 0, 0, Math.PI * 2);
     ctx.fill();
-
-    ctx.fillStyle = "#ffb000";
+    ctx.fillStyle = "#ff9f1c";
     ctx.beginPath();
-    ctx.ellipse(-bird.radius * 0.55, bird.radius * 0.15, bird.radius * 0.55, bird.radius * 0.35, -0.35, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.fillStyle = "#ff7a1a";
-    ctx.beginPath();
-    ctx.moveTo(bird.radius * 0.75, -bird.radius * 0.1);
-    ctx.lineTo(bird.radius * 1.45, bird.radius * 0.12);
-    ctx.lineTo(bird.radius * 0.75, bird.radius * 0.34);
-    ctx.closePath();
-    ctx.fill();
+    ctx.moveTo(18, 0); ctx.lineTo(36, -7); ctx.lineTo(36, 7); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.arc(8, -8, 7, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = "#111";
+    ctx.beginPath(); ctx.arc(10, -8, 3, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,.5)";
+    ctx.beginPath(); ctx.ellipse(-8, 3, 12, 7, -.5, 0, Math.PI*2); ctx.fill();
+    ctx.restore();
 
     ctx.fillStyle = "white";
-    ctx.beginPath();
-    ctx.arc(bird.radius * 0.35, -bird.radius * 0.42, bird.radius * 0.33, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.fillStyle = "#111";
-    ctx.beginPath();
-    ctx.arc(bird.radius * 0.45, -bird.radius * 0.42, bird.radius * 0.13, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.restore();
-  }
-
-  function drawParticles() {
-    ctx.fillStyle = "rgba(255,255,255,0.65)";
-    particles.forEach(p => {
-      ctx.globalAlpha = Math.max(0, p.life / 22) * 0.65;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-      ctx.fill();
-    });
-    ctx.globalAlpha = 1;
-  }
-
-  function drawGround() {
-    ctx.fillStyle = "#6cc34a";
-    ctx.fillRect(0, height - settings.groundHeight, width, settings.groundHeight);
-
-    ctx.fillStyle = "#4a8d36";
-    ctx.fillRect(0, height - settings.groundHeight, width, 9 * scale);
-
-    ctx.fillStyle = "rgba(255,255,255,0.18)";
-    for (let x = -((frame * settings.pipeSpeed) % (28 * scale)); x < width; x += 28 * scale) {
-      ctx.fillRect(x, height - settings.groundHeight + 18 * scale, 12 * scale, 5 * scale);
-    }
-  }
-
-  function drawText() {
+    ctx.font = "900 42px system-ui, -apple-system, sans-serif";
     ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = "rgba(0,0,0,.28)";
+    ctx.strokeText(String(score), W / 2, 78);
+    ctx.fillText(String(score), W / 2, 78);
 
-    ctx.fillStyle = "rgba(0,0,0,0.25)";
-    ctx.font = `900 ${46 * scale}px -apple-system, BlinkMacSystemFont, Arial`;
-    ctx.fillText(String(score), width / 2 + 2, 76 * scale + 2);
-    ctx.fillStyle = "#fff";
-    ctx.fillText(String(score), width / 2, 76 * scale);
+    ctx.font = "700 15px system-ui, -apple-system, sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillStyle = "rgba(255,255,255,.92)";
+    ctx.fillText(`Best: ${best}`, 16, 32 + (window.visualViewport ? 0 : 0));
 
-    ctx.font = `700 ${16 * scale}px -apple-system, BlinkMacSystemFont, Arial`;
-    ctx.fillStyle = "rgba(255,255,255,0.9)";
-    ctx.fillText(`BEST ${bestScore}`, width / 2, 118 * scale);
-
-    if (state === "ready") {
-      panel(width / 2, height * 0.33, 300 * scale, 140 * scale);
-      ctx.fillStyle = "#fff";
-      ctx.font = `900 ${34 * scale}px -apple-system, BlinkMacSystemFont, Arial`;
-      ctx.fillText("FLAP DASH", width / 2, height * 0.33 - 30 * scale);
-      ctx.font = `700 ${18 * scale}px -apple-system, BlinkMacSystemFont, Arial`;
-      ctx.fillText("Tap to flap", width / 2, height * 0.33 + 12 * scale);
-      ctx.font = `500 ${14 * scale}px -apple-system, BlinkMacSystemFont, Arial`;
-      ctx.fillText("Avoid the pipes", width / 2, height * 0.33 + 42 * scale);
-    }
-
-    if (state === "gameover") {
-      ctx.fillStyle = "rgba(0,0,0,0.45)";
-      ctx.fillRect(0, 0, width, height);
-      panel(width / 2, height * 0.46, 310 * scale, 185 * scale);
-      ctx.fillStyle = "#fff";
-      ctx.font = `900 ${34 * scale}px -apple-system, BlinkMacSystemFont, Arial`;
-      ctx.fillText("GAME OVER", width / 2, height * 0.46 - 45 * scale);
-      ctx.font = `700 ${20 * scale}px -apple-system, BlinkMacSystemFont, Arial`;
-      ctx.fillText(`Score: ${score}`, width / 2, height * 0.46 - 6 * scale);
-      ctx.fillText(`Best: ${bestScore}`, width / 2, height * 0.46 + 26 * scale);
-      ctx.font = `600 ${16 * scale}px -apple-system, BlinkMacSystemFont, Arial`;
-      ctx.fillText("Tap to restart", width / 2, height * 0.46 + 66 * scale);
+    if (paused) {
+      ctx.fillStyle = "rgba(0,0,0,.35)";
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = "white";
+      ctx.textAlign = "center";
+      ctx.font = "900 42px system-ui";
+      ctx.fillText("Paused", W / 2, H / 2);
     }
   }
 
-  function panel(cx, cy, w, h) {
-    ctx.fillStyle = "rgba(0,0,0,0.24)";
-    roundRect(cx - w / 2 + 4, cy - h / 2 + 5, w, h, 20 * scale);
-    ctx.fill();
-    ctx.fillStyle = "rgba(18,79,96,0.62)";
-    roundRect(cx - w / 2, cy - h / 2, w, h, 20 * scale);
-    ctx.fill();
-    ctx.strokeStyle = "rgba(255,255,255,0.55)";
-    ctx.lineWidth = 2 * scale;
-    ctx.stroke();
-  }
-
-  function roundRect(x, y, w, h, r) {
-    const radius = Math.min(r, Math.abs(w) / 2, Math.abs(h) / 2);
-    ctx.beginPath();
-    ctx.moveTo(x + radius, y);
-    ctx.lineTo(x + w - radius, y);
-    ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
-    ctx.lineTo(x + w, y + h - radius);
-    ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
-    ctx.lineTo(x + radius, y + h);
-    ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
-    ctx.lineTo(x, y + radius);
-    ctx.quadraticCurveTo(x, y, x + radius, y);
-    ctx.closePath();
-  }
-
-  function loop(time) {
-    const delta = Math.min(32, time - lastTime || 16.67);
-    lastTime = time;
-
-    // Keep gameplay consistent around 60fps.
-    const steps = Math.max(1, Math.round(delta / 16.67));
-    for (let i = 0; i < steps; i++) update();
-
-    drawBackground();
-    drawPipes();
-    drawParticles();
-    drawBird();
-    drawGround();
-    drawText();
+  function loop(now) {
+    const dt = Math.min(0.032, (now - lastTime) / 1000 || 0);
+    lastTime = now;
+    update(dt);
+    draw();
     requestAnimationFrame(loop);
   }
 
-  window.addEventListener("resize", fitCanvas);
-  window.addEventListener("orientationchange", () => setTimeout(fitCanvas, 250));
-  document.addEventListener("touchstart", e => {
-    e.preventDefault();
-    flap();
-  }, { passive: false });
-  document.addEventListener("mousedown", flap);
+  window.addEventListener("resize", resize);
+  canvas.addEventListener("pointerdown", flap);
   document.addEventListener("keydown", e => {
-    if (e.code === "Space" || e.code === "ArrowUp") flap();
+    if (e.code === "Space" || e.code === "ArrowUp") { e.preventDefault(); flap(); }
+    if (e.key.toLowerCase() === "p") setPaused(!paused);
+    if (e.key.toLowerCase() === "m") setMuted(!muted);
   });
 
-  fitCanvas();
-  resetGame();
-  requestAnimationFrame(loop);
+  pauseBtn.addEventListener("click", e => {
+    e.stopPropagation();
+    unlockAudio();
+    setPaused(!paused);
+  });
+
+  muteBtn.addEventListener("click", e => {
+    e.stopPropagation();
+    unlockAudio();
+    setMuted(!muted);
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      bgm.pause();
+      if (audioCtx && audioCtx.state === "running") audioCtx.suspend().catch(() => {});
+    } else {
+      lastTime = performance.now();
+      if (!paused && audioCtx && audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
+      syncMusic();
+    }
+  });
+
+  setMuted(muted);
+  resize();
+  reset();
+  startCard.querySelector("h1").textContent = "Happy Birds";
+  startCard.querySelectorAll("p")[0].textContent = "Tap to flap. Dodge the pipes.";
+  startCard.querySelectorAll("p")[1].textContent = "Tap after a crash to restart.";
+  requestAnimationFrame(t => { lastTime = t; requestAnimationFrame(loop); });
 })();
