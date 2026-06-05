@@ -201,3 +201,15 @@ body {
   .panel h1 { font-size: 30px; }
   .modalCard { padding: 14px; }
 }
+
+.skinPreview {
+  width: 100%;
+  min-height: 84px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 8px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(90,200,250,.22), rgba(255,255,255,.05));
+  border: 1px solid rgba(255,255,255,.10);
+}
+.skinPreview svg { width: 92px; height: 66px; display: block; }

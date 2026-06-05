@@ -14,6 +14,7 @@
   const goShopBtn = document.getElementById("goShopBtn");
   const closeShopBtn = document.getElementById("closeShopBtn");
   const shopHudBtn = document.getElementById("shopHudBtn");
+  const resetBtn = document.getElementById("resetBtn");
   const pauseBtn = document.getElementById("pauseBtn");
   const muteBtn = document.getElementById("muteBtn");
 
@@ -86,7 +87,8 @@
   let resumeAfterShop = false;
   let score = 0;
   let runCoins = 0;
-  let extraLives = 0;
+  const STARTING_EXTRA_LIVES = 0;
+  let extraLives = STARTING_EXTRA_LIVES;
   let invincibleTimer = 0;
   let challengeMode = false;
   let bgOffset = 0;
@@ -271,15 +273,15 @@
   function resetRun() {
     score = 0;
     runCoins = 0;
-    extraLives = 0;
-    invincibleTimer = 0;
+    extraLives = STARTING_EXTRA_LIVES;
+    invincibleTimer = 1.0;
     challengeMode = false;
     bgOffset = 0;
     menuPreviewTime = 0;
     bird.y = H * 0.42;
     bird.vy = 0;
     bird.rot = 0;
-    game.pipeTimer = 1.0;
+    game.pipeTimer = 0.0;
     game.enemyTimer = 0.8;
     game.coinTimer = 1.2;
     game.heartTimer = 4.5;
@@ -404,7 +406,7 @@
   }
 
   function handleHit() {
-    if (invincibleTimer > 0) return;
+    if (state !== "playing" || invincibleTimer > 0) return;
     if (extraLives > 0) {
       extraLives -= 1;
       invincibleTimer = 1.15;
@@ -433,6 +435,18 @@
     updateHud();
     updateHomeStats();
     announce("Game over");
+  }
+
+  function resetCurrentRun() {
+    ensureAudio();
+    state = "menu";
+    bgm.pause();
+    gameOverPanel.classList.add("hidden");
+    homePanel.classList.remove("hidden");
+    resetRun();
+    updateHud();
+    announce("Run reset");
+    syncMusic();
   }
 
   function flap() {
@@ -513,7 +527,7 @@
       }
       const topRect = { x: pipe.x + 12, y: 0, w: game.pipeWidth - 24, h: top };
       const bottomRect = { x: pipe.x + 12, y: bottomY, w: game.pipeWidth - 24, h: H - bottomY - 56 };
-      if (rectsOverlap(bb, topRect) || rectsOverlap(bb, bottomRect)) handleHit();
+      if (rectsOverlap(bb, topRect) || rectsOverlap(bb, bottomRect)) { handleHit(); if (state !== "playing") return; }
     }
     game.pipes = game.pipes.filter(p => p.x + game.pipeWidth > -120);
 
@@ -521,7 +535,7 @@
       enemy.x -= enemy.vx * dt;
       enemy.y += Math.sin(performance.now() * 0.001 * enemy.bobSpeed + enemy.bobPhase) * enemy.bobAmp * dt * 2.3;
       const rect = { x: enemy.x - enemy.w / 2 + 4, y: enemy.y - enemy.h / 2 + 4, w: enemy.w - 8, h: enemy.h - 8 };
-      if (rectsOverlap(bb, rect)) handleHit();
+      if (rectsOverlap(bb, rect)) { handleHit(); if (state !== "playing") return; }
     }
     game.enemies = game.enemies.filter(e => e.x + e.w > -80);
 
@@ -565,10 +579,12 @@
     if (bird.y + bird.h / 2 > H - 56) {
       bird.y = H - 56 - bird.h / 2;
       handleHit();
+      if (state !== "playing") return;
     }
     if (bird.y - bird.h / 2 < 0) {
       bird.y = bird.h / 2;
       handleHit();
+      if (state !== "playing") return;
     }
   }
 
@@ -612,23 +628,79 @@
     for (let x = -40; x < W + 40; x += 32) ctx.fillRect((x - bgOffset * 2) % (W + 32), H - 56, 16, 56);
   }
 
+  function canDrawImage(img) {
+    return !!(img && img.complete && img.naturalWidth && img.naturalHeight);
+  }
+
+  function drawPipeFallback(x, y, h) {
+    if (h <= 0) return;
+    const grad = ctx.createLinearGradient(x, y, x + game.pipeWidth, y);
+    grad.addColorStop(0, "#1f8f39");
+    grad.addColorStop(0.42, "#7ee36d");
+    grad.addColorStop(1, "#197a32");
+    ctx.fillStyle = grad;
+    ctx.fillRect(x + 12, y, game.pipeWidth - 24, h);
+    ctx.fillStyle = "rgba(255,255,255,.20)";
+    ctx.fillRect(x + 24, y, 12, h);
+    ctx.strokeStyle = "#155e2a";
+    ctx.lineWidth = 4;
+    ctx.strokeRect(x + 12, y, game.pipeWidth - 24, h);
+  }
+
+  function drawCoinFallback(x, y, r) {
+    ctx.fillStyle = "#fbbf24";
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "#b45309"; ctx.lineWidth = 3; ctx.stroke();
+    ctx.fillStyle = "#b45309"; ctx.font = `800 ${Math.max(12, r)}px system-ui`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText("C", x, y + 1);
+  }
+
+  function drawHeartFallback(x, y, w, h) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(w / 40, h / 36);
+    ctx.fillStyle = "#ff4d6d";
+    ctx.strokeStyle = "#b5173d";
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(0, 14);
+    ctx.bezierCurveTo(-24, -2, -12, -18, 0, -8);
+    ctx.bezierCurveTo(12, -18, 24, -2, 0, 14);
+    ctx.fill(); ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawEnemyFallback(x, y, w, h) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.fillStyle = "#ef4444"; ctx.strokeStyle = "#991b1b"; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.ellipse(0, 0, w/2, h/2, 0, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(w*0.18, -h*0.18, h*0.23, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = "#111827"; ctx.beginPath(); ctx.arc(w*0.23, -h*0.16, h*0.1, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = "#f59e0b"; ctx.beginPath(); ctx.moveTo(w*0.42, 0); ctx.lineTo(w*0.7, -h*0.2); ctx.lineTo(w*0.7, h*0.2); ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+
   function drawPipeSegment(x, y, h, upsideDown) {
     if (h <= 0) return;
     const img = images.pipe;
-    if (!img.complete) {
-      ctx.fillStyle = "#3fae47";
-      ctx.fillRect(x, y, game.pipeWidth, h);
+    if (!canDrawImage(img)) {
+      drawPipeFallback(x, y, h);
       return;
     }
-    ctx.save();
-    if (upsideDown) {
-      ctx.translate(x + game.pipeWidth / 2, y + h / 2);
-      ctx.rotate(Math.PI);
-      ctx.drawImage(img, -game.pipeWidth / 2, -h / 2, game.pipeWidth, h);
-    } else {
-      ctx.drawImage(img, x, y, game.pipeWidth, h);
+    try {
+      ctx.save();
+      if (upsideDown) {
+        ctx.translate(x + game.pipeWidth / 2, y + h / 2);
+        ctx.rotate(Math.PI);
+        ctx.drawImage(img, -game.pipeWidth / 2, -h / 2, game.pipeWidth, h);
+      } else {
+        ctx.drawImage(img, x, y, game.pipeWidth, h);
+      }
+      ctx.restore();
+    } catch {
+      ctx.restore();
+      drawPipeFallback(x, y, h);
     }
-    ctx.restore();
   }
 
   function skinPalette() {
@@ -667,8 +739,9 @@
     ctx.translate(bird.x, bird.y);
     ctx.rotate(bird.rot);
     if (invincibleTimer > 0 && Math.floor(invincibleTimer * 14) % 2 === 0) ctx.globalAlpha = 0.46;
-    if (img && img.complete && img.naturalWidth > 0) {
-      ctx.drawImage(img, -bird.w / 2, -bird.h / 2, bird.w, bird.h);
+    if (canDrawImage(img)) {
+      try { ctx.drawImage(img, -bird.w / 2, -bird.h / 2, bird.w, bird.h); }
+      catch { drawVectorBirdFallback(); }
     } else {
       drawVectorBirdFallback();
     }
@@ -688,20 +761,32 @@
 
     for (const coin of game.coins) {
       const img = images.coin;
-      if (img.complete) ctx.drawImage(img, coin.x - coin.w / 2, coin.y - coin.h / 2, coin.w, coin.h);
-      else { ctx.fillStyle = "gold"; ctx.beginPath(); ctx.arc(coin.x, coin.y, coin.w/2, 0, Math.PI * 2); ctx.fill(); }
+      if (canDrawImage(img)) {
+        try { ctx.drawImage(img, coin.x - coin.w / 2, coin.y - coin.h / 2, coin.w, coin.h); }
+        catch { drawCoinFallback(coin.x, coin.y, coin.w / 2); }
+      } else {
+        drawCoinFallback(coin.x, coin.y, coin.w / 2);
+      }
     }
 
     for (const heart of game.hearts) {
       const img = images.heart;
-      if (img.complete) ctx.drawImage(img, heart.x - heart.w / 2, heart.y - heart.h / 2, heart.w, heart.h);
-      else { ctx.fillStyle = "#ff6690"; ctx.fillRect(heart.x - heart.w / 2, heart.y - heart.h / 2, heart.w, heart.h); }
+      if (canDrawImage(img)) {
+        try { ctx.drawImage(img, heart.x - heart.w / 2, heart.y - heart.h / 2, heart.w, heart.h); }
+        catch { drawHeartFallback(heart.x, heart.y, heart.w, heart.h); }
+      } else {
+        drawHeartFallback(heart.x, heart.y, heart.w, heart.h);
+      }
     }
 
     for (const enemy of game.enemies) {
       const img = images.enemy;
-      if (img.complete) ctx.drawImage(img, enemy.x - enemy.w / 2, enemy.y - enemy.h / 2, enemy.w, enemy.h);
-      else { ctx.fillStyle = "#ef4444"; ctx.fillRect(enemy.x - enemy.w / 2, enemy.y - enemy.h / 2, enemy.w, enemy.h); }
+      if (canDrawImage(img)) {
+        try { ctx.drawImage(img, enemy.x - enemy.w / 2, enemy.y - enemy.h / 2, enemy.w, enemy.h); }
+        catch { drawEnemyFallback(enemy.x, enemy.y, enemy.w, enemy.h); }
+      } else {
+        drawEnemyFallback(enemy.x, enemy.y, enemy.w, enemy.h);
+      }
     }
 
     drawBird();
@@ -726,9 +811,51 @@
   function loop(now) {
     const dt = Math.min(0.032, ((now - lastTime) || 16) / 1000);
     lastTime = now;
-    update(dt);
-    draw();
+    try {
+      update(dt);
+      draw();
+    } catch (err) {
+      console.error("Happy Birds frame error:", err);
+      // Keep the animation alive and draw a simple fallback scene instead of freezing.
+      try {
+        ctx.clearRect(0, 0, W, H);
+        drawBackground();
+        drawBird();
+      } catch {}
+    }
     requestAnimationFrame(loop);
+  }
+
+
+  function shopSkinPalette(id) {
+    if (id === "bluejay") return { body1: "#93c5fd", body2: "#2563eb", wing1: "#dbeafe", wing2: "#60a5fa", stroke: "#1d4ed8", beak1: "#f59e0b", beak2: "#92400e", tail: "#bfdbfe" };
+    if (id === "ruby") return { body1: "#fca5a5", body2: "#dc2626", wing1: "#fecaca", wing2: "#fb7185", stroke: "#991b1b", beak1: "#f59e0b", beak2: "#92400e", tail: "#fda4af" };
+    if (id === "mint") return { body1: "#86efac", body2: "#10b981", wing1: "#d1fae5", wing2: "#6ee7b7", stroke: "#047857", beak1: "#f59e0b", beak2: "#92400e", tail: "#a7f3d0" };
+    return { body1: "#ffe45e", body2: "#ffb703", wing1: "#fff4b0", wing2: "#ffd166", stroke: "#d97706", beak1: "#fb8500", beak2: "#c2410c", tail: "#ffd166" };
+  }
+
+  function shopSkinSVG(id) {
+    const p = shopSkinPalette(id);
+    return `
+      <svg viewBox="0 0 180 130" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <defs>
+          <linearGradient id="${id}-body" x1="0" x2="1">
+            <stop offset="0%" stop-color="${p.body1}"/>
+            <stop offset="100%" stop-color="${p.body2}"/>
+          </linearGradient>
+          <linearGradient id="${id}-wing" x1="0" x2="1">
+            <stop offset="0%" stop-color="${p.wing1}"/>
+            <stop offset="100%" stop-color="${p.wing2}"/>
+          </linearGradient>
+        </defs>
+        <ellipse cx="84" cy="67" rx="52" ry="38" fill="url(#${id}-body)" stroke="${p.stroke}" stroke-width="5"/>
+        <ellipse cx="69" cy="79" rx="24" ry="15" fill="url(#${id}-wing)" stroke="${p.stroke}" stroke-width="4" transform="rotate(-17 69 79)"/>
+        <circle cx="106" cy="50" r="18" fill="#fff"/>
+        <circle cx="112" cy="51" r="8" fill="#111827"/>
+        <circle cx="114" cy="48" r="2.5" fill="#fff"/>
+        <path d="M130 63 L168 50 L167 76 Z" fill="${p.beak1}" stroke="${p.beak2}" stroke-width="4" stroke-linejoin="round"/>
+        <path d="M40 63 Q19 56 13 42 Q9 53 16 68 Q23 78 40 74" fill="${p.tail}" stroke="${p.stroke}" stroke-width="4" stroke-linejoin="round"/>
+      </svg>`;
   }
 
   function renderShop() {
@@ -740,10 +867,11 @@
       const card = document.createElement("div");
       card.className = `skinCard${selected ? " selected" : ""}`;
 
-      const img = document.createElement("img");
-      img.src = skin.asset;
-      img.alt = `${skin.name} skin`;
-      card.appendChild(img);
+      const preview = document.createElement("div");
+      preview.className = "skinPreview";
+      preview.setAttribute("aria-label", `${skin.name} preview`);
+      preview.innerHTML = shopSkinSVG(skin.id);
+      card.appendChild(preview);
 
       const h4 = document.createElement("h4");
       h4.textContent = skin.name;
@@ -807,6 +935,7 @@
   openShopBtn.addEventListener("click", openShop);
   goShopBtn.addEventListener("click", openShop);
   shopHudBtn.addEventListener("click", () => { ensureAudio(); openShop(); });
+  resetBtn.addEventListener("click", e => { e.stopPropagation(); resetCurrentRun(); });
   closeShopBtn.addEventListener("click", closeShop);
   shopModal.addEventListener("click", e => { if (e.target === shopModal) closeShop(); });
   pauseBtn.addEventListener("click", () => { ensureAudio(); setPaused(state === "playing"); });
@@ -832,6 +961,7 @@
   // Init
   setMuted(muted);
   resize();
+  resetRun();
   updateHud();
   updateHomeStats();
   renderShop();
