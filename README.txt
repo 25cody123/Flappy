@@ -17,3 +17,5 @@ How to use:
 2. Upload all files and folders to the root of your GitHub Pages repository.
 3. If you already had an older version, refresh the page once so the service worker updates.
 4. On iPhone, tap Play once to unlock background music.
+
+Fix added: visible animated bird preview, canvas fallback bird drawing, and tap-anywhere controls.

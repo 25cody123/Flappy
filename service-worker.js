@@ -1,4 +1,4 @@
-const CACHE_NAME = "happy-birds-appstore-v1";
+const CACHE_NAME = "happy-birds-appstore-v2-fixed-bird";
 const FILES = [
   "./",
   "./index.html",

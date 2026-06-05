@@ -90,6 +90,7 @@
   let invincibleTimer = 0;
   let challengeMode = false;
   let bgOffset = 0;
+  let menuPreviewTime = 0;
 
   const bird = { x: 120, y: 260, w: 70, h: 52, vy: 0, rot: 0 };
   const game = {
@@ -274,6 +275,7 @@
     invincibleTimer = 0;
     challengeMode = false;
     bgOffset = 0;
+    menuPreviewTime = 0;
     bird.y = H * 0.42;
     bird.vy = 0;
     bird.rot = 0;
@@ -445,6 +447,20 @@
   }
 
   function update(dt) {
+    if (state === "menu" || state === "gameover") {
+      menuPreviewTime += dt;
+      bgOffset = (bgOffset + game.speed * 0.10 * dt) % 1000;
+      bird.y = H * 0.38 + Math.sin(menuPreviewTime * 2.2) * 14;
+      bird.rot = Math.sin(menuPreviewTime * 2.2) * 0.12;
+      for (const p of game.particles) {
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.life -= dt;
+        p.vy += 180 * dt;
+      }
+      game.particles = game.particles.filter(p => p.life > 0);
+      return;
+    }
     if (state !== "playing") return;
     if (invincibleTimer > 0) invincibleTimer -= dt;
 
@@ -615,17 +631,46 @@
     ctx.restore();
   }
 
+  function skinPalette() {
+    if (selectedSkin === "bluejay") return { body: "#3b82f6", wing: "#bfdbfe", stroke: "#1d4ed8" };
+    if (selectedSkin === "ruby") return { body: "#ef4444", wing: "#fecaca", stroke: "#991b1b" };
+    if (selectedSkin === "mint") return { body: "#10b981", wing: "#d1fae5", stroke: "#047857" };
+    return { body: "#ffd43b", wing: "#fff1a6", stroke: "#d97706" };
+  }
+
+  function drawVectorBirdFallback() {
+    const pal = skinPalette();
+    ctx.lineWidth = 3;
+    ctx.fillStyle = pal.body;
+    ctx.strokeStyle = pal.stroke;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, bird.w / 2, bird.h / 2, 0, 0, Math.PI * 2);
+    ctx.fill(); ctx.stroke();
+
+    ctx.fillStyle = pal.wing;
+    ctx.beginPath();
+    ctx.ellipse(-10, 10, 18, 10, -0.35, 0, Math.PI * 2);
+    ctx.fill(); ctx.stroke();
+
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.arc(12, -10, 10, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#111827";
+    ctx.beginPath(); ctx.arc(16, -9, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#fb8500";
+    ctx.strokeStyle = "#c2410c";
+    ctx.beginPath(); ctx.moveTo(28, 1); ctx.lineTo(50, -8); ctx.lineTo(50, 10); ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+
   function drawBird() {
     const img = images[selectedSkin] || images.classic;
     ctx.save();
     ctx.translate(bird.x, bird.y);
     ctx.rotate(bird.rot);
     if (invincibleTimer > 0 && Math.floor(invincibleTimer * 14) % 2 === 0) ctx.globalAlpha = 0.46;
-    if (img && img.complete) {
+    if (img && img.complete && img.naturalWidth > 0) {
       ctx.drawImage(img, -bird.w / 2, -bird.h / 2, bird.w, bird.h);
     } else {
-      ctx.fillStyle = "#ffd43b";
-      ctx.beginPath(); ctx.ellipse(0, 0, bird.w / 2, bird.h / 2, 0, 0, Math.PI * 2); ctx.fill();
+      drawVectorBirdFallback();
     }
     ctx.restore();
   }
@@ -749,9 +794,7 @@
 
   // Events
   window.addEventListener("resize", resize);
-  canvas.addEventListener("pointerdown", () => {
-    if (state === "playing") flap();
-  });
+  // Taps are handled by the document listener so tapping anywhere works reliably on iPhone.
   document.addEventListener("keydown", e => {
     const key = e.key.toLowerCase();
     if (e.code === "Space" || e.code === "ArrowUp") { e.preventDefault(); flap(); }
@@ -768,6 +811,12 @@
   shopModal.addEventListener("click", e => { if (e.target === shopModal) closeShop(); });
   pauseBtn.addEventListener("click", () => { ensureAudio(); setPaused(state === "playing"); });
   muteBtn.addEventListener("click", () => { ensureAudio(); setMuted(!muted); });
+
+  document.addEventListener("pointerdown", e => {
+    const interactive = e.target.closest("button, .modalCard, #shopModal");
+    if (interactive) return;
+    flap();
+  });
 
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
